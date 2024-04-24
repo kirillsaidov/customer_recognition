@@ -1,0 +1,44 @@
+def process_face(frame: cv2.Mat, db_path: str, model: str, repeate_log_s: int = 60):
+    # find face and analyze
+    faces = DeepFace.find(img_path=frame, db_path=db_path, model_name=model, enforce_detection=False)[0]
+    face_info = DeepFace.analyze(
+        img_path = './imgs/img_id1.jpg', 
+        actions = ['age', 'gender', 'race', 'emotion'], 
+        enforce_detection=False,
+    )[0]
+
+    # log information
+    if not faces.empty:
+        # get face id
+        face_id = os.path.basename(faces.iloc[0]['identity'])
+
+        # find face id and log to db if 1 minute passed since last log (of that face id)
+        entry = mongo_col.find_one({'id': face_id}, sort=[( '_id', pymongo.DESCENDING )])
+        if entry and datetime.now() - datetime.strptime(entry['time'], '%d-%m-%Y %H:%M:%S') > timedelta(seconds=repeate_log_s):
+            mongo_col.insert_one({
+                'time': datetime.now().strftime('%d-%m-%Y %H:%M:%S'),
+                'status': 'found',
+                'id': face_id,
+                'age': face_info['age'],
+                'gender': face_info['dominant_gender'],
+                'race': face_info['dominant_race'],
+                'emotion': face_info['emotion'],
+            })
+    else:
+        # generate face id
+        face_id = uuid.uuid4().hex + '.jpg'
+
+        # save face
+        cv2.imwrite(os.path.join(db_path, face_id), frame)
+
+        # log to db
+        mongo_col.insert_one({
+            'time': datetime.now().strftime('%d-%m-%Y %H:%M:%S'),
+            'status': 'new',
+            'id': face_id,
+            'age': face_info['age'],
+            'gender': face_info['dominant_gender'],
+            'race': face_info['dominant_race'],
+            'emotion': face_info['emotion'],
+        })
+

@@ -1,4 +1,4 @@
-# module auxiliary
+# module cvutil
 
 # system
 import os

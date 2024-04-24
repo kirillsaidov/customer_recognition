@@ -3,6 +3,10 @@
 # system
 import os
 import uuid
+import json
+import traceback
+from queue import Queue
+from threading import Thread, Event
 from datetime import datetime, timedelta
 
 # db
@@ -15,7 +19,8 @@ import cv2
 from deepface import DeepFace
 
 # custom
-from auxiliary import *
+from db import *
+from cvutil import *
 
 # constants
 DEEPFACE_MODELS = [
@@ -34,51 +39,63 @@ DEEPFACE_MODELS = [
 # db
 mongo_client = pymongo.MongoClient('mongodb://localhost:27017/')
 mongo_col = mongo_client['cafe_recognition']['log']
+export_csv = 'db.csv'
 
 
-def process_face(frame: cv2.Mat, db_path: str, model: str, repeate_log_s: int = 60):
-    # find face and analyze
-    faces = DeepFace.find(img_path=frame, db_path=db_path, model_name=model, enforce_detection=False)[0]
-    face_info = DeepFace.analyze(
-        img_path = './imgs/img_id1.jpg', 
-        actions = ['age', 'gender', 'race', 'emotion'], 
-        enforce_detection=False,
-    )[0]
+def server_face_processing(fq: Queue, shutdown: Event, db_path: str, model_name: str, repeat_log_s: int, timeout: float = 0.25):
+    """Server for processing faces and logging to DB
 
-    # log information
-    if not faces.empty:
-        # get face id
-        face_id = os.path.basename(faces.iloc[0]['identity'])
-
-        # find face id and log to db if 1 minute passed since last log (of that face id)
-        entry = mongo_col.find_one({'id': face_id}, sort=[( '_id', pymongo.DESCENDING )])
-        if entry and datetime.now() - datetime.strptime(entry['time'], '%d-%m-%Y %H:%M:%S') > timedelta(seconds=repeate_log_s):
-            mongo_col.insert_one({
-                'time': datetime.now().strftime('%d-%m-%Y %H:%M:%S'),
-                'status': 'found',
-                'id': face_id,
-                'age': face_info['age'],
-                'gender': face_info['dominant_gender'],
-                'race': face_info['dominant_race'],
-                'emotion': face_info['emotion'],
-            })
-    else:
-        # generate face id
+    Args:
+        fq (Queue): queue
+        shutdown (Event): shutdown event
+        timeout (float, optional): timeout for receiving data from queue. Defaults to 0.25.
+    """
+    def save_new_face(frame: cv2.Mat):
+        # generate id
         face_id = uuid.uuid4().hex + '.jpg'
 
-        # save face
+        # save face image
         cv2.imwrite(os.path.join(db_path, face_id), frame)
 
-        # log to db
-        mongo_col.insert_one({
-            'time': datetime.now().strftime('%d-%m-%Y %H:%M:%S'),
-            'status': 'new',
-            'id': face_id,
-            'age': face_info['age'],
-            'gender': face_info['dominant_gender'],
-            'race': face_info['dominant_race'],
-            'emotion': face_info['emotion'],
-        })
+        # log
+        db_log_insert(mongo_col, face_id, 'new', export_csv)
+ 
+    # start
+    try:
+        # check db exists
+        if not os.path.exists(db_path):
+            os.mkdir(db_path)
+
+        # run processing server
+        while not shutdown.is_set():
+            # get frame
+            frame = None
+            try: frame = fq.get(timeout=timeout)
+            except: continue
+
+            # process frame
+            dir_list = list(filter(lambda x: x.endswith('.jpg'), os.listdir(db_path)))
+            if len(dir_list):
+                faces = DeepFace.find(img_path=frame, db_path=db_path, model_name=model_name, enforce_detection=False, silent=True)
+                if len(faces) and not faces[0].empty:                    
+                    # find face id and log to db if N seconds have passed since last log (of that face id)
+                    face = faces[0].to_dict()
+                    print(face)
+                    face_id = os.path.basename(face['identity'][0])
+                    entry = mongo_col.find_one({'id': face_id}, sort=[( '_id', pymongo.DESCENDING )])
+                    if entry and datetime.now() - datetime.strptime(entry['time'], '%d-%m-%Y %H:%M:%S') > timedelta(seconds=repeat_log_s):
+                        db_log_insert(mongo_col, face_id, 'found', export_csv)
+                else: # no face found
+                    save_new_face(frame)
+            else: # not image in dir
+                save_new_face(frame)
+
+            # finish processing the frame
+            fq.task_done()
+    except:
+        traceback.print_exc()
+    finally:
+        shutdown.set()
 
 
 def update(params: dict):
@@ -92,6 +109,8 @@ def update(params: dict):
         params['enable_recognition'] = not params['enable_recognition']
         params['show_tip'] = False
         params['face_bbox'] = None
+    if params['shutdown'].is_set():
+        exit(0)
    
     # detect faces
     if params['enable_recognition']:
@@ -112,14 +131,15 @@ def update(params: dict):
             face_bbox_area = (fb[1][0] - fb[0][0]) * (fb[1][1] - fb[0][1]) 
             face_region_area = ((fr[0] * frame.shape[1]) * (fr[1] * frame.shape[0]))
             ratio = face_bbox_area / face_region_area
-            if ratio > 1.5:
-                frame_crop = frame[fb[0][1]:fb[1][1], fb[0][0]:fb[1][0]]
+            if ratio > params['face_bbox_region_ratio']:
+                frame_crop = frame[fb[0][1]:fb[1][1], fb[0][0]:fb[1][0]].copy()
 
                 # show tip
                 params['show_tip'] = False 
 
                 # process
-                process_face(frame_crop, db_path=params['db_path'], model=params['deepface_model'], repeate_log_s=params['repeat_log_s'])
+                if not params['fq'].qsize():
+                    params['fq'].put(frame_crop)
             else:
                 params['show_tip'] = True
     
@@ -183,18 +203,41 @@ def draw(frame: cv2.Mat, params: dict = None):
 
 
 if __name__ == '__main__':
+    # read config
+    config = None
+    with open('config.json') as f:
+        config = json.load(f)
+
+    print(json)
+
+    # setup
     update_params = {
         'enable_debug_info': True,
         'enable_recognition': False,
-        'face_region': (0.3, 0.4),
+        'face_region': (0.6, 0.6) if config is None else config['face_region'],
         'face_bbox': None,
+        'face_bbox_region_ratio': 0.5 if config is None else config['face_bbox_region_ratio'],
         'db_path': './imgs',
         'deepface_model': DEEPFACE_MODELS[1],
-        'repeat_log_s': 5,
+        'timeout': 0.25 if config is None else config['timeout'],
+        'repeat_log_s': 5 if config is None else config['repeat_log_s'],
         'show_tip': False, 
+        'fq': Queue(),
+        'shutdown': Event(),
     }
-        
-    # run
+
+    # startup processing server
+    proc_pid = Thread(target=server_face_processing, args=(
+        update_params['fq'], 
+        update_params['shutdown'],
+        update_params['db_path'],
+        update_params['deepface_model'],
+        update_params['repeat_log_s'],
+        update_params['timeout'],
+    ))
+    proc_pid.start()
+
+    # run cv (camera read only)
     display_video(
         video_path=0, 
         func=update, 
@@ -205,5 +248,9 @@ if __name__ == '__main__':
         wait_per_frame_secs=0.5,
         record_file_name=None,
     )
+
+    # shutdown
+    update_params['shutdown'].set()
+    proc_pid.join()
 
 

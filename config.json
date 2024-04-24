@@ -1,0 +1,6 @@
+{
+    "face_region": [0.6, 0.6],
+    "face_bbox_region_ratio": 0.3,
+    "timeout": 0.25,
+    "repeat_log_s": 5
+}
