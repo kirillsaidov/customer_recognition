@@ -57,8 +57,19 @@ def server_face_processing(fq: Queue, shutdown: Event, db_path: str, model_name:
         # save face image
         cv2.imwrite(os.path.join(db_path, face_id), frame)
 
+        # age and gender
+        face_info = DeepFace.analyze(
+            img_path = frame, 
+            actions = ['age', 'gender'], 
+            enforce_detection=False,
+            silent=True,
+        )[0]
+
         # log
-        db_log_insert(mongo_col, face_id, 'new', export_csv)
+        db_log_insert(col=mongo_col, face_id=face_id, status='new', info={
+            'age': face_info['age'],
+            'gender': face_info['dominant_gender'],
+        }, export_csv=export_csv)
  
     # start
     try:
@@ -84,7 +95,7 @@ def server_face_processing(fq: Queue, shutdown: Event, db_path: str, model_name:
                     face_id = os.path.basename(face['identity'][0])
                     entry = mongo_col.find_one({'id': face_id}, sort=[( '_id', pymongo.DESCENDING )])
                     if entry and datetime.now() - datetime.strptime(entry['time'], '%d-%m-%Y %H:%M:%S') > timedelta(seconds=repeat_log_s):
-                        db_log_insert(mongo_col, face_id, 'found', export_csv)
+                        db_log_insert(col=mongo_col, face_id=face_id, status='found', export_csv=export_csv)
                 else: # no face found
                     save_new_face(frame)
             else: # not image in dir
