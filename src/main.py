@@ -190,7 +190,7 @@ if __name__ == '__main__':
         'face_bbox': None,
         'db_path': './imgs',
         'deepface_model': DEEPFACE_MODELS[1],
-        'repeat_log_s': 60,
+        'repeat_log_s': 5,
         'show_tip': False, 
     }
         
