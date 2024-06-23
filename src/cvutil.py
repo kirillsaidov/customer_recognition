@@ -125,6 +125,7 @@ def frame_rate_elapsed_v2(counter: list[int], pfps: int, source_fps: int) -> boo
     Returns:
         bool: True upon frame elapsed (move on to next frame)
     """
+    print(f'{counter[0]}::{pfps}::{source_fps}')
     if (pfps * counter[0]) % source_fps == 0:
         counter[0] = 0
         return True

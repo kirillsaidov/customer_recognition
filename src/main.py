@@ -38,7 +38,7 @@ DEEPFACE_MODELS = [
 
 # db
 mongo_client = pymongo.MongoClient('mongodb://localhost:27017/')
-mongo_col = mongo_client['cafe_recognition']['log']
+mongo_col = mongo_client['cf']['log']
 export_csv = 'db.csv'
 
 
