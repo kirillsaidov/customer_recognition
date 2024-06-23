@@ -1,7 +1,7 @@
 # customer_recognition
 Customer cafe recognition software prototype. Remembers customers and logs each time they come. 
 
-<img src="imgs/db.png" width="360">
+<img src="imgs/db.png" width="480">
 
 ## Run
 1. Install `MongoDB`
